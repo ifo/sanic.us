@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"strconv"
 
 	"github.com/gorilla/mux"
 	"github.com/ifo/sanic"
@@ -14,10 +13,21 @@ import (
 
 var port = flag.Int("port", 3000, "Port to run the server on")
 
+type Context struct {
+	WorkerMap map[string]*sanic.Worker
+	Vars      map[string]string
+	Templates *template.Template
+}
+
 func main() {
 	flag.Parse()
 
-	http.Handle("/", router())
+	c := Context{
+		WorkerMap: generateWorkers(),
+		Templates: template.Must(template.New("id").Parse(indexPage)),
+	}
+
+	http.Handle("/", router(c))
 
 	log.Printf("Starting server on port %d\n", *port)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
@@ -26,16 +36,40 @@ func main() {
 	}
 }
 
-func router() *mux.Router {
+func indexHandler(w http.ResponseWriter, r *http.Request, c Context) {
+	http.Redirect(w, r, "/10", http.StatusTemporaryRedirect)
+}
+
+func idHandler(w http.ResponseWriter, r *http.Request, c Context) {
+	wid := c.Vars["id"]
+	worker := c.WorkerMap[wid]
+	id := worker.IDString(worker.NextID())
+	tmpl := c.Templates.Lookup("id")
+	tmpl.Execute(w, id)
+}
+
+func injectContext(fn func(w http.ResponseWriter, r *http.Request, c Context), c Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c.Vars = mux.Vars(r)
+		fn(w, r, c)
+	}
+}
+
+func router(c Context) *mux.Router {
 	r := mux.NewRouter()
-	r.HandleFunc("/", indexHandler).Methods("GET")
-	r.HandleFunc("/{id:[7-9]|10}", idHandler).Methods("GET")
+	r.HandleFunc("/", injectContext(indexHandler, c)).Methods("GET")
+	r.HandleFunc("/{id:[7-9]|10}", injectContext(idHandler, c)).Methods("GET")
 	// TODO handle .html, .text, and .json appends
 	return r
 }
 
-func indexHandler(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/10", http.StatusTemporaryRedirect)
+func generateWorkers() map[string]*sanic.Worker {
+	return map[string]*sanic.Worker{
+		"10": sanic.NewWorker10(0),
+		"9":  sanic.NewWorker9(0),
+		"8":  sanic.NewWorker8(),
+		"7":  sanic.NewWorker7(),
+	}
 }
 
 var indexPage = `<!DOCTYPE HTML>
@@ -71,27 +105,3 @@ var indexPage = `<!DOCTYPE HTML>
   </body>
 </html>
 `
-
-func idHandler(w http.ResponseWriter, r *http.Request) {
-	length, _ := strconv.Atoi(mux.Vars(r)["id"])
-	worker, _ := generateXLengthWorker(length)
-	id := worker.IDString(worker.NextID())
-
-	tmpl := template.Must(template.New("index").Parse(indexPage))
-	tmpl.Execute(w, id)
-}
-
-func generateXLengthWorker(x int) (*sanic.Worker, error) {
-	switch x {
-	case 7:
-		return &sanic.SevenLengthWorker, nil
-	case 8:
-		return &sanic.EightLengthWorker, nil
-	case 9:
-		return &sanic.NineLengthWorker, nil
-	case 10:
-		return &sanic.TenLengthWorker, nil
-	default:
-		return nil, fmt.Errorf("%d is not a number between 7 and 10")
-	}
-}
